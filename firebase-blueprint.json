@@ -1,0 +1,320 @@
+{
+  "entities": {
+    "Company": {
+      "title": "Company",
+      "description": "Information about a carrier company.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "logoUrl": { "type": "string" },
+        "dotNumber": { "type": "string" },
+        "contactEmail": { "type": "string" },
+        "contactPhone": { "type": "string" },
+        "address": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "active", "suspended"] },
+        "plan": { "type": "string", "enum": ["Basic", "Premium", "Enterprise"] },
+        "stripeCustomerId": { "type": "string" },
+        "joinedDate": { "type": "string" }
+      },
+      "required": ["id", "name", "dotNumber", "contactEmail", "contactPhone", "address", "status", "plan", "stripeCustomerId", "joinedDate"]
+    },
+    "User": {
+      "title": "User",
+      "description": "User profile containing roles and company links.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["super_admin", "admin", "dispatcher", "driver"] },
+        "companyId": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "phone": { "type": "string" },
+        "licenseNumber": { "type": "string" },
+        "truckNumber": { "type": "string" },
+        "isArchived": { "type": "boolean" },
+        "archivedAt": { "type": "string" },
+        "archivedBy": { "type": "string" }
+      },
+      "required": ["id", "name", "email", "role", "status", "phone"]
+    },
+    "Load": {
+      "title": "Load",
+      "description": "A logistics cargo shipment load.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "loadNumber": { "type": "string" },
+        "companyId": { "type": "string" },
+        "assignedDriverId": { "type": "string" },
+        "assignedDispatcherId": { "type": "string" },
+        "status": { "type": "string", "enum": ["booked", "dispatched", "in_transit", "delivered", "canceled"] },
+        "cargoType": { "type": "string" },
+        "weight": { "type": "number" },
+        "value": { "type": "number" },
+        "rate": { "type": "number" },
+        "urgent": { "type": "boolean" },
+        "notes": { "type": "string" },
+        "pickup": { "type": "object" },
+        "delivery": { "type": "object" },
+        "currentGps": { "type": "object" },
+        "gpsHistory": { "type": "array" },
+        "gpsConsentAccepted": { "type": "boolean" },
+        "gpsConsentAcceptedBy": { "type": "string" },
+        "gpsConsentAcceptedAt": { "type": "string" },
+        "podUrl": { "type": "string" },
+        "podUploadedAt": { "type": "string" },
+        "podFileName": { "type": "string" },
+        "isArchived": { "type": "boolean" },
+        "archivedAt": { "type": "string" },
+        "archivedBy": { "type": "string" }
+      },
+      "required": ["id", "loadNumber", "companyId", "status", "cargoType", "weight", "value", "rate", "urgent", "pickup", "delivery", "gpsConsentAccepted", "gpsHistory"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A communication chat thread message.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "loadId": { "type": "string" },
+        "channel": { "type": "string", "enum": ["load", "general"] },
+        "companyId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderRole": { "type": "string", "enum": ["super_admin", "admin", "dispatcher", "driver"] },
+        "text": { "type": "string" },
+        "attachmentUrl": { "type": "string" },
+        "attachmentName": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "channel", "companyId", "senderId", "senderName", "senderRole", "text", "timestamp"]
+    },
+    "Invoice": {
+      "title": "Invoice",
+      "description": "Invoicing data for SaaS carrier subscription or custom freight operations.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "invoiceNumber": { "type": "string" },
+        "companyId": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string" },
+        "dueDate": { "type": "string" },
+        "status": { "type": "string", "enum": ["draft", "sent", "paid"] },
+        "isManual": { "type": "boolean" },
+        "description": { "type": "string" }
+      },
+      "required": ["id", "invoiceNumber", "companyId", "amount", "date", "dueDate", "status", "isManual", "description"]
+    },
+    "AppNotification": {
+      "title": "AppNotification",
+      "description": "System notification alerts.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string", "enum": ["info", "warning", "success", "danger"] },
+        "timestamp": { "type": "string" },
+        "read": { "type": "boolean" },
+        "forRole": { "type": "string" },
+        "forCompanyId": { "type": "string" }
+      },
+      "required": ["id", "title", "message", "type", "timestamp", "read", "forRole"]
+    },
+    "Mail": {
+      "title": "Mail",
+      "description": "An outgoing queued email managed by the Trigger Email extension.",
+      "type": "object",
+      "properties": {
+        "to": { "type": "string" },
+        "message": {
+          "type": "object",
+          "properties": {
+            "subject": { "type": "string" },
+            "html": { "type": "string" }
+          },
+          "required": ["subject", "html"]
+        }
+      },
+      "required": ["to", "message"]
+    },
+    "AgreementRecord": {
+      "title": "AgreementRecord",
+      "description": "A legally binding signed record of accepting the SaaS Subscription Agreement.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "fullText": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "signerName": { "type": "string" },
+        "signerEmail": { "type": "string" },
+        "userAgent": { "type": "string" },
+        "companyId": { "type": "string" }
+      },
+      "required": ["id", "fullText", "timestamp", "signerName", "signerEmail", "userAgent", "companyId"]
+    },
+    "RateConfirmation": {
+      "title": "RateConfirmation",
+      "description": "A Freight Broker legal contract document detailing rate and requirements.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "lrcn": { "type": "string" },
+        "fileName": { "type": "string" },
+        "fileUrl": { "type": "string" },
+        "uploaderId": { "type": "string" },
+        "uploaderName": { "type": "string" },
+        "uploadedAt": { "type": "string" }
+      },
+      "required": ["id", "lrcn", "fileName", "fileUrl", "uploaderId", "uploaderName", "uploadedAt"]
+    },
+    "Consent": {
+      "title": "Consent",
+      "description": "A legally binding digital consent record for GPS tracking.",
+      "type": "object",
+      "properties": {
+        "loadId": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "status": { "type": "string", "enum": ["granted"] },
+        "userId": { "type": "string" }
+      },
+      "required": ["loadId", "timestamp", "status", "userId"]
+    },
+    "LocationPoint": {
+      "title": "LocationPoint",
+      "description": "High-frequency real-time coordinate position telemetry for a specific cargo load.",
+      "type": "object",
+      "properties": {
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "speed": { "type": "number" },
+        "heading": { "type": "number" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["lat", "lng", "timestamp"]
+    },
+    "DispatchNotificationLog": {
+      "title": "DispatchNotificationLog",
+      "description": "Log of dispatched driver notification alerts.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "driverId": { "type": "string" },
+        "driverName": { "type": "string" },
+        "driverEmail": { "type": "string" },
+        "driverPhone": { "type": "string" },
+        "loadNumber": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string" },
+        "channels": { "type": "array" },
+        "status": { "type": "string" },
+        "companyId": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "driverId", "driverName", "title", "message", "status", "companyId", "timestamp"]
+    },
+    "SmsMessage": {
+      "title": "SmsMessage",
+      "description": "Queued SMS text message to be sent via SMS gateway.",
+      "type": "object",
+      "properties": {
+        "to": { "type": "string" },
+        "body": { "type": "string" },
+        "status": { "type": "string" },
+        "driverName": { "type": "string" },
+        "loadNumber": { "type": "string" },
+        "companyId": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["to", "body", "status", "createdAt"]
+    },
+    "BillingEvent": {
+      "title": "BillingEvent",
+      "description": "Audit log of Stripe billing webhook events.",
+      "type": "object",
+      "properties": {
+        "stripeEventId": { "type": "string" },
+        "type": { "type": "string" },
+        "companyId": { "type": "string" },
+        "status": { "type": "string" },
+        "processedAt": { "type": "string" },
+        "summary": { "type": "string" }
+      },
+      "required": ["stripeEventId", "type", "companyId", "status", "processedAt"]
+    }
+  },
+  "firestore": {
+    "/companies/{companyId}": {
+      "schema": "Company",
+      "description": "Platform tenant carrier companies."
+    },
+    "/admins/{adminId}/agreement_records/{recordId}": {
+      "schema": "AgreementRecord",
+      "description": "Immutable audit log records of accepted SaaS Agreements."
+    },
+    "/admins/{adminId}/rate_confirmations/{rcId}": {
+      "schema": "RateConfirmation",
+      "description": "Carrier-specific Rate Confirmation contract document metadata."
+    },
+    "/admins/{adminId}/drivers/{driverId}/consents/{consentId}": {
+      "schema": "Consent",
+      "description": "Immutable legal audit records of driver tracking consent."
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Global user accounts containing role mappings."
+    },
+    "/admins/{adminId}/drivers/{driverId}": {
+      "schema": "User",
+      "description": "Carrier-specific driver details and profiles."
+    },
+    "/admins/{adminId}/dispatchers/{dispatcherId}": {
+      "schema": "User",
+      "description": "Carrier-specific dispatcher details and profiles."
+    },
+    "/admins/{adminId}/loads/{loadId}": {
+      "schema": "Load",
+      "description": "Carrier shipment loads."
+    },
+    "/admins/{adminId}/loads/{loadId}/locations/{pointId}": {
+      "schema": "LocationPoint",
+      "description": "High-frequency real-time telemetry position points of in-transit cargo."
+    },
+    "/admins/{adminId}/loads/{loadId}/communications/{messageId}": {
+      "schema": "Message",
+      "description": "Trip-specific communications and status logs."
+    },
+    "/admins/{adminId}/general_communications/{messageId}": {
+      "schema": "Message",
+      "description": "General carrier-wide announcements."
+    },
+    "/admins/{adminId}/invoices/{invoiceId}": {
+      "schema": "Invoice",
+      "description": "Carrier-specific billing records."
+    },
+    "/admins/{adminId}/billing_events/{eventId}": {
+      "schema": "BillingEvent",
+      "description": "Carrier-specific Stripe billing webhook audit events."
+    },
+    "/notifications/{notificationId}": {
+      "schema": "AppNotification",
+      "description": "Global or tenant-specific in-app notifications."
+    },
+    "/mail/{mailId}": {
+      "schema": "Mail",
+      "description": "Outgoing email messages to be sent via the Trigger Email extension."
+    },
+    "/dispatch_logs/{logId}": {
+      "schema": "DispatchNotificationLog",
+      "description": "Log records of dispatched driver notification alerts."
+    },
+    "/sms_queue/{smsId}": {
+      "schema": "SmsMessage",
+      "description": "Queued SMS text messages for driver dispatch notifications."
+    }
+  }
+}

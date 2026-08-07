@@ -1,0 +1,6 @@
+{
+  "name": "TruckDispatch Pro",
+  "description": "Multi-tenant SaaS platform for trucking companies. Features include multi-stop load management, real-time dispatcher-driver chat, simulated document perspective-correction POD scanner, GPS route visualization, and full billing and financial performance reports.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

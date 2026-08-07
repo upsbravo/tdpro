@@ -1,0 +1,926 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ==========================================
+    // GLOBAL CATCH-ALL SAFETY NET & HEALTH
+    // ==========================================
+    match /test/connection {
+      allow read: if true;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ==========================================
+    // REUSABLE SECURITY PRIMITIVES & HELPERS
+    // ==========================================
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn();
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    // Helper functions for reading user roles/companies (using global database variable)
+    function isSuperAdmin() {
+      return isSignedIn() && (
+        request.auth.uid == 'goclmeXYrCMIHOIKnwtXJRkaTup2' ||
+        request.auth.uid == 'gocImeXYrCMlHOIKnwtXJRkaTup2' ||
+        request.auth.uid == 'goclmeXYrCMlHOIKnwtXJRkaTup2' ||
+        request.auth.uid == 'gocImeXYrCMIHOIKnwtXJRkaTup2' ||
+        ('email' in request.auth.token && request.auth.token.email.lower() == 'nexusweft@gmail.com') ||
+        (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', '') == 'super_admin'
+        )
+      );
+    }
+
+    function isCompanyActive(companyId) {
+      return isSuperAdmin() || (
+        companyId != null && companyId != '' && (
+          !exists(/databases/$(database)/documents/companies/$(companyId)) || (
+            get(/databases/$(database)/documents/companies/$(companyId)).data.get('status', 'active') != 'deactivated' &&
+            get(/databases/$(database)/documents/companies/$(companyId)).data.get('status', 'active') != 'terminated' &&
+            get(/databases/$(database)/documents/companies/$(companyId)).data.get('status', 'active') != 'suspended'
+          )
+        )
+      );
+    }
+
+    function isUserActive() {
+      return isSuperAdmin() || (
+        !exists(/databases/$(database)/documents/users/$(request.auth.uid)) || (
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('status', 'active') != 'terminated' &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('status', 'active') != 'deactivated' &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('status', 'active') != 'suspended' &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('lifecycleStatus', 'active') != 'terminated' &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('lifecycleStatus', 'active') != 'suspended' &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('lifecycleStatus', 'active') != 'archived' &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('accessStatus', 'active') != 'suspended' &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('accessStatus', 'active') != 'disabled'
+        )
+      );
+    }
+
+    function isCompanyAdmin(companyId) {
+      return isSignedIn() && isCompanyActive(companyId) && isUserActive() && (
+        isSuperAdmin() ||
+        !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', '') in ['admin', 'super_admin', 'dispatcher', 'owner_operator']) ||
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('companyId', '') == companyId) ||
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('companyId', '') in ['', 'co_apex'])
+      );
+    }
+
+    function isCompanyDispatcher(companyId) {
+      return isSignedIn() && isCompanyActive(companyId) && isUserActive() && (
+        isSuperAdmin() ||
+        isCompanyAdmin(companyId) ||
+        !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', '') in ['dispatcher', 'admin', 'super_admin', 'owner_operator']) ||
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('companyId', '') == companyId) ||
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('companyId', '') in ['', 'co_apex'])
+      );
+    }
+
+    function isCompanyDriver(companyId) {
+      return isSignedIn() && isCompanyActive(companyId) && isUserActive();
+    }
+
+    function isCompanyMember(companyId) {
+      return isSignedIn() && isCompanyActive(companyId) && isUserActive();
+    }
+
+    function isLoadChatOpen(companyId, loadId) {
+      return exists(/databases/$(database)/documents/admins/$(companyId)/loads/$(loadId)) &&
+        get(/databases/$(database)/documents/admins/$(companyId)/loads/$(loadId)).data.status != 'delivered' &&
+        get(/databases/$(database)/documents/admins/$(companyId)/loads/$(loadId)).data.status != 'canceled';
+    }
+
+    // ==========================================
+    // SCHEMAS AND ENTITY VALIDATORS
+    // ==========================================
+    function isValidCompany(data) {
+      return data.keys().hasAll(['id', 'name', 'dotNumber', 'contactEmail']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.name is string && data.name.size() <= 150 &&
+        data.dotNumber is string && data.dotNumber.size() <= 30 &&
+        data.contactEmail is string && data.contactEmail.size() <= 150 &&
+        (!data.keys().contains('contactPhone') || (data.contactPhone is string && data.contactPhone.size() <= 30)) &&
+        (!data.keys().contains('address') || (data.address is string && data.address.size() <= 200)) &&
+        (!data.keys().contains('status') || (data.status is string && data.status in ['pending', 'active', 'deactivation_pending', 'deactivated', 'suspended'])) &&
+        (!data.keys().contains('plan') || (data.plan is string && data.plan in ['Basic', 'Premium', 'Enterprise'])) &&
+        (!data.keys().contains('stripeCustomerId') || (data.stripeCustomerId is string && data.stripeCustomerId.size() <= 128)) &&
+        (!data.keys().contains('joinedDate') || (data.joinedDate is string && data.joinedDate.size() <= 30)) &&
+        (!data.keys().contains('logoUrl') || (data.logoUrl is string && data.logoUrl.size() <= 1000)) &&
+        (!data.keys().contains('themeColor') || (data.themeColor is string && data.themeColor.size() <= 50)) &&
+        (!data.keys().contains('onboardingEmailsSent') || (data.onboardingEmailsSent >= 0)) &&
+        (!data.keys().contains('lastOnboardingEmailSent') || (data.lastOnboardingEmailSent is string && data.lastOnboardingEmailSent.size() <= 50)) &&
+        (!data.keys().contains('legalAcceptedAt') || (data.legalAcceptedAt is string && data.legalAcceptedAt.size() <= 50)) &&
+        (!data.keys().contains('legalSignedBy') || (data.legalSignedBy is string && data.legalSignedBy.size() <= 150)) &&
+        (!data.keys().contains('viewedAt') || (data.viewedAt is string && data.viewedAt.size() <= 50)) &&
+        (!data.keys().contains('registeredAt') || (data.registeredAt is string && data.registeredAt.size() <= 50)) &&
+        (!data.keys().contains('invitationHistory') || (data.invitationHistory is list && data.invitationHistory.size() <= 100));
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['id', 'name', 'email', 'role']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.name is string && data.name.size() <= 150 &&
+        data.email is string && data.email.size() <= 150 &&
+        data.role is string && data.role in ['super_admin', 'admin', 'dispatcher', 'driver'] &&
+        (!('status' in data) || data.status in ['active', 'inactive', 'pending', 'invited', 'suspended', 'onboarding', 'terminated', 'archived', 'draft']) &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
+        (!('companyId' in data) || (data.companyId is string && data.companyId.size() <= 128)) &&
+        (!('licenseNumber' in data) || (data.licenseNumber is string && data.licenseNumber.size() <= 100)) &&
+        (!('truckNumber' in data) || (data.truckNumber is string && data.truckNumber.size() <= 50)) &&
+        (!('ownerOperatorName' in data) || (data.ownerOperatorName is string && data.ownerOperatorName.size() <= 150)) &&
+        (!('dutyStatus' in data) || data.dutyStatus in ['On Duty', 'Off Duty', 'On Break']) &&
+        (!('manualLocationEnabled' in data) || data.manualLocationEnabled is bool) &&
+        (!('manualCity' in data) || (data.manualCity is string && data.manualCity.size() <= 100)) &&
+        (!('manualState' in data) || (data.manualState is string && data.manualState.size() <= 100)) &&
+        (!('manualDateTime' in data) || (data.manualDateTime is string && data.manualDateTime.size() <= 100)) &&
+        (!('manualNotes' in data) || (data.manualNotes is string && data.manualNotes.size() <= 500)) &&
+        (!data.keys().contains('isArchived') || (data.isArchived is bool)) &&
+        (!data.keys().contains('archivedAt') || (data.archivedAt is string && data.archivedAt.size() <= 100)) &&
+        (!data.keys().contains('archivedBy') || (data.archivedBy is string && data.archivedBy.size() <= 150)) &&
+        (!data.keys().contains('createdAt') || (data.createdAt is string && data.createdAt.size() <= 100)) &&
+        (!data.keys().contains('updatedAt') || (data.updatedAt is string && data.updatedAt.size() <= 100)) &&
+        (!data.keys().contains('joinedDate') || (data.joinedDate is string && data.joinedDate.size() <= 100)) &&
+        (!data.keys().contains('lastLoginAt') || (data.lastLoginAt is string && data.lastLoginAt.size() <= 100)) &&
+        (!data.keys().contains('notificationPreferences') || (data.notificationPreferences is map)) &&
+        (!data.keys().contains('dispatcherPermissions') || (data.dispatcherPermissions is map)) &&
+        (!data.keys().contains('tourStatus') || (data.tourStatus is map));
+    }
+
+    function isValidUserUpdate(data) {
+      return (!data.keys().contains('id') || (data.id is string && data.id.size() <= 128)) &&
+        (!data.keys().contains('name') || (data.name is string && data.name.size() <= 150)) &&
+        (!data.keys().contains('email') || (data.email is string && data.email.size() <= 150)) &&
+        (!data.keys().contains('role') || (data.role is string && data.role in ['super_admin', 'admin', 'dispatcher', 'driver'])) &&
+        (!('status' in data) || data.status in ['active', 'inactive', 'pending', 'invited', 'suspended', 'onboarding', 'terminated', 'archived', 'draft']) &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
+        (!('companyId' in data) || (data.companyId is string && data.companyId.size() <= 128)) &&
+        (!('licenseNumber' in data) || (data.licenseNumber is string && data.licenseNumber.size() <= 100)) &&
+        (!('truckNumber' in data) || (data.truckNumber is string && data.truckNumber.size() <= 50)) &&
+        (!('ownerOperatorName' in data) || (data.ownerOperatorName is string && data.ownerOperatorName.size() <= 150)) &&
+        (!('dutyStatus' in data) || data.dutyStatus in ['On Duty', 'Off Duty', 'On Break']) &&
+        (!('manualLocationEnabled' in data) || data.manualLocationEnabled is bool) &&
+        (!('manualCity' in data) || (data.manualCity is string && data.manualCity.size() <= 100)) &&
+        (!('manualState' in data) || (data.manualState is string && data.manualState.size() <= 100)) &&
+        (!('manualDateTime' in data) || (data.manualDateTime is string && data.manualDateTime.size() <= 100)) &&
+        (!('manualNotes' in data) || (data.manualNotes is string && data.manualNotes.size() <= 500)) &&
+        (!data.keys().contains('isArchived') || (data.isArchived is bool)) &&
+        (!data.keys().contains('archivedAt') || (data.archivedAt is string && data.archivedAt.size() <= 100)) &&
+        (!data.keys().contains('archivedBy') || (data.archivedBy is string && data.archivedBy.size() <= 150)) &&
+        (!data.keys().contains('createdAt') || (data.createdAt is string && data.createdAt.size() <= 100)) &&
+        (!data.keys().contains('updatedAt') || (data.updatedAt is string && data.updatedAt.size() <= 100)) &&
+        (!data.keys().contains('joinedDate') || (data.joinedDate is string && data.joinedDate.size() <= 100)) &&
+        (!data.keys().contains('lastLoginAt') || (data.lastLoginAt is string && data.lastLoginAt.size() <= 100)) &&
+        (!data.keys().contains('notificationPreferences') || (data.notificationPreferences is map)) &&
+        (!data.keys().contains('dispatcherPermissions') || (data.dispatcherPermissions is map)) &&
+        (!data.keys().contains('tourStatus') || (data.tourStatus is map));
+    }
+
+    function isValidLoad(data) {
+      return data.id is string &&
+        data.loadNumber is string &&
+        data.companyId is string &&
+        data.status is string;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['id', 'channel', 'companyId', 'senderId', 'senderName', 'senderRole', 'text', 'timestamp']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.channel is string && data.channel in ['load', 'general'] &&
+        data.companyId is string && data.companyId.size() <= 128 &&
+        data.senderId is string && data.senderId.size() <= 128 &&
+        data.senderName is string && data.senderName.size() <= 150 &&
+        data.senderRole is string && data.senderRole in ['super_admin', 'admin', 'dispatcher', 'driver'] &&
+        data.text is string && data.text.size() <= 5000 &&
+        ((data.timestamp is string && data.timestamp.size() <= 50) || data.timestamp is timestamp) &&
+        (data.get('attachmentName', null) == null || (data.get('attachmentName', '') is string && data.get('attachmentName', '').size() <= 300)) &&
+        (data.get('attachmentUrl', null) == null || (data.get('attachmentUrl', '') is string && data.get('attachmentUrl', '').size() <= 2048));
+    }
+
+    function isValidInvoice(data) {
+      return data.keys().hasAll(['id', 'invoiceNumber', 'companyId', 'amount', 'date', 'dueDate', 'status', 'isManual', 'description']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.invoiceNumber is string && data.invoiceNumber.size() <= 100 &&
+        data.companyId is string && data.companyId.size() <= 128 &&
+        data.amount >= 0 &&
+        data.date is string && data.date.size() <= 30 &&
+        data.dueDate is string && data.dueDate.size() <= 30 &&
+        data.status is string && data.status in ['draft', 'sent', 'paid'] &&
+        data.isManual is bool &&
+        data.description is string && data.description.size() <= 1000;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['id', 'title', 'message', 'type', 'timestamp', 'read']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.title is string && data.title.size() <= 200 &&
+        data.message is string && data.message.size() <= 2000 &&
+        data.type is string && data.type.size() <= 50 &&
+        data.timestamp is string && data.timestamp.size() <= 50 &&
+        data.read is bool &&
+        (data.get('forRole', null) == null || (data.get('forRole', '') is string && data.get('forRole', '').size() <= 50)) &&
+        (data.get('forCompanyId', null) == null || (data.get('forCompanyId', '') is string && data.get('forCompanyId', '').size() <= 128)) &&
+        (data.get('forUserId', null) == null || (data.get('forUserId', '') is string && data.get('forUserId', '').size() <= 128)) &&
+        (data.get('ticketId', null) == null || (data.get('ticketId', '') is string && data.get('ticketId', '').size() <= 128));
+    }
+
+    // Helper for Trigger Email Extension
+    function isValidMail(data) {
+      return data.keys().hasAll(['to', 'message']) &&
+        (data.to is string || data.to is list) &&
+        data.message is map &&
+        data.message.keys().hasAll(['subject', 'html']) &&
+        data.message.subject is string && data.message.subject.size() <= 200 &&
+        data.message.html is string && data.message.html.size() <= 50000;
+    }
+
+    function isValidConsent(data) {
+      return data.status is string && (data.status == 'granted' || data.status == 'accepted') &&
+        (data.keys().contains('timestamp') || data.keys().contains('signedAt'));
+    }
+
+    function isValidLocationPoint(data) {
+      return data.keys().hasAll(['lat', 'lng', 'timestamp']) &&
+        data.lat >= -180 && data.lat <= 180 &&
+        data.lng >= -180 && data.lng <= 180 &&
+        data.timestamp is string && data.timestamp.size() <= 50;
+    }
+
+    function isValidDispatchLog(data) {
+      return data.keys().hasAll(['id', 'driverId', 'title', 'message', 'status', 'timestamp']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.driverId is string && data.driverId.size() <= 128 &&
+        data.title is string && data.title.size() <= 200 &&
+        data.message is string && data.message.size() <= 2000 &&
+        data.status is string && data.status.size() <= 50 &&
+        data.timestamp is string && data.timestamp.size() <= 50;
+    }
+
+    function isValidSmsMessage(data) {
+      return data.keys().hasAll(['to', 'body', 'status', 'createdAt']) &&
+        data.to is string && data.to.size() <= 30 &&
+        data.body is string && data.body.size() <= 1600 &&
+        data.status is string && data.status.size() <= 50 &&
+        data.createdAt is string && data.createdAt.size() <= 50;
+    }
+
+    // ==========================================
+    // RESOURCE ROUTES & ACCESS POLICIES
+    // ==========================================
+
+    // 1. Companies Route
+    match /companies/{companyId} {
+      allow get: if isSignedIn() && (
+        isSuperAdmin() || 
+        (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('companyId', '') == companyId
+        ) || 
+        (resource != null && 'email' in request.auth.token && request.auth.token.email.lower() == resource.data.get('contactEmail', '').lower())
+      );
+      allow list: if isSignedIn() && (
+        isSuperAdmin() || 
+        (
+          resource != null && 
+          'email' in request.auth.token && resource.data.get('contactEmail', '').lower() == request.auth.token.email.lower()
+        ) ||
+        (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          resource.id == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('companyId', '')
+        )
+      );
+      allow create: if isSignedIn() && isEmailVerified() && isValidId(companyId) && (isSuperAdmin() || isValidCompany(incoming()));
+      allow update: if isSignedIn() && isEmailVerified() && isValidId(companyId) && (isSuperAdmin() || (
+        (
+          ('email' in request.auth.token && request.auth.token.email.lower() == resource.data.get('contactEmail', '').lower()) ||
+          (
+            exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('companyId', '') == companyId
+          )
+        ) && 
+        incoming().diff(resource.data).affectedKeys().hasOnly([
+          'name', 'logoUrl', 'contactEmail', 'contactPhone', 'address', 'dotNumber', 
+          'legalAcceptedAt', 'legalSignedBy', 'plan', 'status', 'stripeCustomerId',
+          'onboardingEmailsSent', 'lastOnboardingEmailSent', 'themeColor', 'viewedAt', 'registeredAt', 'invitationHistory',
+          'gpsTrackingEnabled'
+        ]) && (
+          // Prevent Stripe Subscription Spoofing: Carrier admin cannot upgrade plan/status without a valid stripeCustomerId
+          !incoming().diff(resource.data).affectedKeys().hasAny(['plan', 'status']) ||
+          incoming().get('stripeCustomerId', '') != ''
+        )
+      ));
+      allow delete: if isSuperAdmin();
+
+      // Integration Center Subcollections
+      match /integrations/{providerId} {
+        allow read, write: if isSignedIn() && (isSuperAdmin() || isCompanyAdmin(companyId));
+      }
+
+      match /integration_logs/{logId} {
+        allow read, write: if isSignedIn() && (isSuperAdmin() || isCompanyAdmin(companyId));
+      }
+    }
+
+    // 2. Users Route (Global profiles for role resolution)
+    match /users/{userId} {
+      allow get: if isSignedIn() && (
+        isSuperAdmin() || 
+        request.auth.uid == userId || 
+        (resource != null && 'email' in request.auth.token && request.auth.token.email.lower() == resource.data.get('email', '').lower()) ||
+        (
+          resource != null &&
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          resource.data.get('companyId', '') == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('companyId', '')
+        ) ||
+        (resource != null && isCompanyMember(resource.data.get('companyId', '')))
+      );
+      allow list: if isSignedIn() && (
+        isSuperAdmin() || 
+        (resource != null && 'email' in request.auth.token && resource.data.get('email', '') == request.auth.token.email) ||
+        (resource != null && 'email' in request.auth.token && resource.data.get('email', '').lower() == request.auth.token.email.lower()) ||
+        (
+          resource != null &&
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          resource.data.get('companyId', '') == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('companyId', '')
+        )
+      );
+      allow create: if isSignedIn() && isEmailVerified() && isValidId(userId) && (isSuperAdmin() || (isValidUser(incoming()) && (
+        (
+          request.auth.uid == userId && 
+          'email' in request.auth.token &&
+          incoming().get('email', '').lower() == request.auth.token.email.lower() && 
+          incoming().get('role', '') in ['admin', 'dispatcher', 'driver']
+        ) ||
+        (
+          incoming().get('companyId', '') != '' &&
+          isCompanyAdmin(incoming().get('companyId', '')) && 
+          incoming().get('role', '') in ['admin', 'dispatcher', 'driver']
+        ) ||
+        (
+          incoming().get('companyId', '') != '' &&
+          isCompanyDispatcher(incoming().get('companyId', '')) && 
+          incoming().get('role', '') == 'driver'
+        )
+      )));
+       allow update: if isSignedIn() && isEmailVerified() && isValidId(userId) && (
+        isSuperAdmin() || 
+        (
+          'email' in request.auth.token && resource.data.get('email', '').lower() == request.auth.token.email.lower()
+        ) ||
+        (
+          isValidUserUpdate(incoming()) && (
+            (
+              request.auth.uid == userId && 
+              incoming().diff(resource.data).affectedKeys().hasOnly(['name', 'phone', 'licenseNumber', 'truckNumber', 'ownerOperatorName', 'dutyStatus', 'manualLocationEnabled', 'manualCity', 'manualState', 'manualDateTime', 'manualNotes', 'tourStatus', 'driverTermsAcceptedAt', 'gpsConsentAcceptedAt', 'smsConsentAcceptedAt', 'legalAcceptedAt', 'driverSosAcceptedAt', 'fmcsaAcceptedAt', 'notificationPreferences'])
+            ) ||
+            (
+              isCompanyAdmin(resource.data.get('companyId', '')) && 
+              incoming().get('companyId', resource.data.get('companyId', '')) == resource.data.get('companyId', '') && 
+              incoming().get('role', resource.data.get('role', '')) == resource.data.get('role', '') && 
+              incoming().get('email', resource.data.get('email', '')).lower() == resource.data.get('email', '').lower()
+            ) ||
+            (
+              // Allow admins and dispatchers to update driver details (including email/phone/dutyStatus)
+              (
+                isCompanyAdmin(resource.data.get('companyId', '')) || 
+                (
+                  isCompanyDispatcher(resource.data.get('companyId', '')) && 
+                  !(resource.data.get('isArchived', false) == true && !(incoming().get('isArchived', resource.data.get('isArchived', false)) == true))
+                )
+              ) &&
+              resource.data.get('role', '') == 'driver' &&
+              incoming().get('role', resource.data.get('role', '')) == 'driver' &&
+              incoming().get('companyId', resource.data.get('companyId', '')) == resource.data.get('companyId', '')
+            )
+          )
+        )
+      );
+      allow delete: if isSuperAdmin() || 
+        (isCompanyAdmin(resource.data.get('companyId', '')) && request.auth.uid != userId);
+    }
+
+    // 3. Multi-Tenant Carrier Space (/admins/{adminId}/...)
+    match /admins/{adminId} {
+      allow get, read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+      allow create, update: if isSignedIn() && isEmailVerified() && (isSuperAdmin() || isCompanyAdmin(adminId));
+      
+      // Immutable legal audit trails
+      match /agreement_records/{recordId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyAdmin(adminId));
+        allow create: if isSignedIn() && isEmailVerified() && isValidId(recordId) && (
+          isSuperAdmin() || isCompanyAdmin(adminId)
+        );
+        allow update, delete: if false; // Strict immutability!
+      }
+
+      // Drivers Subcollection
+      match /drivers/{driverId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create: if isSignedIn() && isEmailVerified() && isValidId(driverId) && (isSuperAdmin() || (isValidUser(incoming()) && (
+          isCompanyAdmin(adminId) || isCompanyDispatcher(adminId) || request.auth.uid == driverId
+        )));
+        allow update: if isSignedIn() && isEmailVerified() && isValidId(driverId) && (isSuperAdmin() || (isValidUserUpdate(incoming()) && (
+          isCompanyAdmin(adminId) || 
+          (
+            isCompanyDispatcher(adminId) && 
+            !('isArchived' in resource.data && resource.data.isArchived == true && !('isArchived' in incoming() && incoming().isArchived == true))
+          ) || 
+          request.auth.uid == driverId
+        )));
+        allow delete: if isSuperAdmin() || isCompanyAdmin(adminId);
+
+        match /consents/{consentId} {
+          allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+          allow create: if isSignedIn() && isEmailVerified() && isValidId(consentId) && (isSuperAdmin() || (isValidConsent(incoming()) && (
+            request.auth.uid == driverId || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId) || isCompanyDriver(adminId) || isCompanyMember(adminId)
+          )));
+          allow update, delete: if false; // Strict immutability!
+        }
+
+        match /compensation_profiles/{profileId} {
+          allow read: if isSignedIn() && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId) || request.auth.uid == driverId);
+          allow create, update: if isSignedIn() && isEmailVerified() && isValidId(profileId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+          allow delete: if isSuperAdmin() || isCompanyAdmin(adminId);
+        }
+      }
+
+      // Dispatchers Subcollection
+      match /dispatchers/{dispatcherId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create: if isSignedIn() && isEmailVerified() && isValidId(dispatcherId) && (isSuperAdmin() || (isValidUser(incoming()) && (
+          isCompanyAdmin(adminId) || isCompanyDispatcher(adminId) || request.auth.uid == dispatcherId
+        )));
+        allow update: if isSignedIn() && isEmailVerified() && isValidId(dispatcherId) && (isSuperAdmin() || (isValidUserUpdate(incoming()) && (
+          isCompanyAdmin(adminId) || isCompanyDispatcher(adminId) || request.auth.uid == dispatcherId
+        )));
+        allow delete: if isSuperAdmin() || isCompanyAdmin(adminId);
+      }
+
+      // Rate Confirmations Subcollection
+      match /rate_confirmations/{rcId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        allow create: if isSignedIn() && isEmailVerified() && isValidId(rcId) && (
+          isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId)
+        );
+        allow update, delete: if isSignedIn() && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+      }
+
+      // Loads Subcollection
+      match /loads/{loadId} {
+        allow read: if isSignedIn() && (
+          isSuperAdmin() || 
+          isCompanyMember(adminId) ||
+          isCompanyAdmin(adminId) ||
+          isCompanyDispatcher(adminId)
+        );
+        
+        allow create: if isSignedIn()
+          && isEmailVerified()
+          && isValidId(loadId)
+          && isValidLoad(incoming())
+          && incoming().companyId == adminId
+          && (
+            isSuperAdmin() ||
+            isCompanyAdmin(adminId) ||
+            isCompanyDispatcher(adminId) ||
+            isCompanyMember(adminId)
+          );
+
+        allow update: if isSignedIn()
+          && isEmailVerified()
+          && isValidId(loadId)
+          && isValidLoad(incoming())
+          && incoming().companyId == adminId
+          && (
+            isSuperAdmin() ||
+            isCompanyAdmin(adminId) ||
+            isCompanyDispatcher(adminId) ||
+            isCompanyMember(adminId)
+          );
+
+        allow delete: if isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId);
+
+        match /locations/{pointId} {
+          allow read: if isSignedIn() && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+          allow read: if isSignedIn() && isCompanyDriver(adminId) && 
+            exists(/databases/$(database)/documents/admins/$(adminId)/loads/$(loadId)) &&
+            'assignedDriverId' in get(/databases/$(database)/documents/admins/$(adminId)/loads/$(loadId)).data && 
+            get(/databases/$(database)/documents/admins/$(adminId)/loads/$(loadId)).data.assignedDriverId == request.auth.uid;
+
+          allow create: if isSignedIn() && isEmailVerified() && isValidId(pointId) && isValidLocationPoint(incoming()) && (
+            isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId)
+          );
+          allow create: if isSignedIn() && isEmailVerified() && isValidId(pointId) && isValidLocationPoint(incoming()) && 
+            isCompanyDriver(adminId) && 
+            exists(/databases/$(database)/documents/admins/$(adminId)/loads/$(loadId)) &&
+            'assignedDriverId' in get(/databases/$(database)/documents/admins/$(adminId)/loads/$(loadId)).data && 
+            get(/databases/$(database)/documents/admins/$(adminId)/loads/$(loadId)).data.assignedDriverId == request.auth.uid;
+
+          allow update, delete: if false; // Strict immutability!
+        }
+
+        // Nested communications thread for each load
+        match /communications/{messageId} {
+          allow read: if isSignedIn() && (
+            isSuperAdmin() || 
+            isCompanyAdmin(adminId) || 
+            isCompanyDispatcher(adminId) ||
+            (
+              (isCompanyDriver(adminId) || isCompanyMember(adminId)) && 
+              exists(/databases/$(database)/documents/admins/$(adminId)/loads/$(loadId)) &&
+              get(/databases/$(database)/documents/admins/$(adminId)/loads/$(loadId)).data.get('assignedDriverId', '') == request.auth.uid
+            )
+          );
+
+          allow create: if isSignedIn() && isEmailVerified() && isValidId(messageId) && isValidMessage(incoming()) && 
+            incoming().companyId == adminId && (
+              isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId) || isCompanyMember(adminId)
+            );
+          allow create: if isSignedIn() && isEmailVerified() && isValidId(messageId) && isValidMessage(incoming()) && 
+            incoming().companyId == adminId &&
+            isLoadChatOpen(adminId, loadId) &&
+            isCompanyDriver(adminId) && 
+            exists(/databases/$(database)/documents/admins/$(adminId)/loads/$(loadId)) &&
+            'assignedDriverId' in get(/databases/$(database)/documents/admins/$(adminId)/loads/$(loadId)).data && 
+            get(/databases/$(database)/documents/admins/$(adminId)/loads/$(loadId)).data.assignedDriverId == request.auth.uid && 
+            incoming().senderId == request.auth.uid;
+
+          allow update, delete: if isSuperAdmin() || isCompanyAdmin(adminId) || (isSignedIn() && 'senderId' in resource.data && resource.data.senderId == request.auth.uid);
+        }
+      }
+
+      // General communications thread
+      match /general_communications/{messageId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create: if isSignedIn() && isEmailVerified() && isValidId(messageId) && isValidMessage(incoming()) && (
+          isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId) || (isCompanyDriver(adminId) && incoming().senderId == request.auth.uid)
+        );
+        allow update, delete: if isSuperAdmin() || isCompanyAdmin(adminId) || (isSignedIn() && resource.data.senderId == request.auth.uid);
+      }
+
+      // Carrier Invoices & Accounting Subcollections
+      match /invoices/{invoiceId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId) || isCompanyMember(adminId));
+        allow create, update: if isSignedIn() && isEmailVerified() && isValidId(invoiceId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        allow delete: if isSuperAdmin();
+      }
+
+      // Fuel Entries Subcollection (Legacy & Operational)
+      match /fuel_entries/{fuelEntryId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create, update: if isSignedIn() && isEmailVerified() && isValidId(fuelEntryId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        allow delete: if isSuperAdmin() || isCompanyAdmin(adminId);
+      }
+
+      // Fuel Cards Subcollection
+      match /fuel_cards/{fuelCardId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create, update, delete: if isSignedIn() && isEmailVerified() && isValidId(fuelCardId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+      }
+
+      // Fuel Card Assignments Subcollection (Effective-Dated Historical Ledger)
+      match /fuel_card_assignments/{assignmentId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create, update: if isSignedIn() && isEmailVerified() && isValidId(assignmentId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        allow delete: if isSuperAdmin() || isCompanyAdmin(adminId);
+      }
+
+      // Fuel Import Batches Subcollection
+      match /fuel_import_batches/{batchId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create, update: if isSignedIn() && isEmailVerified() && isValidId(batchId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        allow delete: if isSuperAdmin() || isCompanyAdmin(adminId);
+      }
+
+      // Fuel Transactions Subcollection (Master Fuel Ledger)
+      match /fuel_transactions/{transactionId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create, update: if isSignedIn() && isEmailVerified() && isValidId(transactionId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        allow delete: if isSuperAdmin() || isCompanyAdmin(adminId);
+
+        match /product_lines/{lineId} {
+          allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+          allow create, update, delete: if isSignedIn() && isEmailVerified() && isValidId(lineId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        }
+
+        match /allocations/{allocationId} {
+          allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+          allow create, update, delete: if isSignedIn() && isEmailVerified() && isValidId(allocationId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        }
+      }
+
+      // Fuel Match Exceptions Subcollection
+      match /fuel_match_exceptions/{exceptionId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create, update, delete: if isSignedIn() && isEmailVerified() && isValidId(exceptionId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+      }
+
+      // IFTA Trip Mileage Subcollection
+      match /ifta_trip_mileage/{mileageRecordId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create, update, delete: if isSignedIn() && isEmailVerified() && isValidId(mileageRecordId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+      }
+
+      // IFTA Quarters Subcollection
+      match /ifta_quarters/{iftaQuarterId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create, update: if isSignedIn() && isEmailVerified() && isValidId(iftaQuarterId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        allow delete: if isSuperAdmin() || isCompanyAdmin(adminId);
+
+        match /jurisdictions/{jurisdictionCode} {
+          allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+          allow create, update, delete: if isSignedIn() && isEmailVerified() && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        }
+      }
+
+      // Trucks Subcollection
+      match /trucks/{truckId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create, update, delete: if isSignedIn() && isEmailVerified() && isValidId(truckId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+      }
+
+      // Trailers Subcollection
+      match /trailers/{trailerId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create, update, delete: if isSignedIn() && isEmailVerified() && isValidId(trailerId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+      }
+
+      // Truck Driver Assignments Subcollection
+      match /truck_driver_assignments/{assignmentId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create, update, delete: if isSignedIn() && isEmailVerified() && isValidId(assignmentId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+      }
+
+      // Owner Operator Companies Subcollection
+      match /owner_operator_companies/{ooCompanyId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create, update, delete: if isSignedIn() && isEmailVerified() && isValidId(ooCompanyId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+      }
+
+      // Maintenance Records Subcollection
+      match /maintenance_records/{maintId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create, update, delete: if isSignedIn() && isEmailVerified() && isValidId(maintId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+      }
+
+      // Fleet & General Audit Logs Subcollection
+      match /audit_logs/{auditId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create: if isSignedIn() && isEmailVerified() && isValidId(auditId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        allow update, delete: if isSuperAdmin();
+      }
+
+      // Owner Operators Subcollection
+      match /owner_operators/{ooId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create, update, delete: if isSignedIn() && isEmailVerified() && isValidId(ooId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+      }
+
+      // IFTA Correction Logs Subcollection
+      match /ifta_correction_logs/{logId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyMember(adminId));
+        allow create: if isSignedIn() && isEmailVerified() && isValidId(logId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        allow update, delete: if isSuperAdmin();
+      }
+
+      // Advances Subcollection
+      match /advances/{advanceId} {
+        allow read: if isSignedIn() && (
+          isSuperAdmin() || 
+          isCompanyAdmin(adminId) || 
+          isCompanyDispatcher(adminId) ||
+          (isCompanyDriver(adminId) && resource != null && resource.data.get('driverId', '') == request.auth.uid)
+        );
+        allow create, update: if isSignedIn() && isEmailVerified() && isValidId(advanceId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        allow delete: if isSuperAdmin() || isCompanyAdmin(adminId);
+      }
+
+      // Pay Rules Subcollection
+      match /pay_rules/{payRuleId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        allow create, update, delete: if isSignedIn() && isEmailVerified() && isValidId(payRuleId) && (isSuperAdmin() || isCompanyAdmin(adminId));
+      }
+
+      // Settlements & Line Items Subcollection
+      match /settlements/{settlementId} {
+        allow read: if isSignedIn() && (
+          isSuperAdmin() || 
+          isCompanyAdmin(adminId) || 
+          isCompanyDispatcher(adminId) ||
+          (isCompanyDriver(adminId) && resource != null && resource.data.get('driverId', '') == request.auth.uid && resource.data.get('status', '') in ['approved', 'locked', 'synced', 'paid'])
+        );
+        allow create, update: if isSignedIn() && isEmailVerified() && isValidId(settlementId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        allow delete: if isSuperAdmin();
+
+        match /line_items/{lineItemId} {
+          allow read: if isSignedIn() && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId) || isCompanyDriver(adminId));
+          allow create, update, delete: if isSignedIn() && isEmailVerified() && isValidId(lineItemId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        }
+      }
+
+      // Accounting Sync Logs
+      match /accounting_sync_logs/{syncLogId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyAdmin(adminId));
+        allow create: if isSignedIn() && isEmailVerified() && isValidId(syncLogId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        allow update, delete: if isSuperAdmin();
+      }
+
+      // Accounting Audit Logs (Immutable)
+      match /accounting_audit_logs/{auditId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyAdmin(adminId));
+        allow create: if isSignedIn() && isEmailVerified() && isValidId(auditId) && (isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId));
+        allow update, delete: if false; // Strict immutability!
+      }
+
+      // Billing Events Audit Log
+      match /billing_events/{eventId} {
+        allow read: if isSignedIn() && (isSuperAdmin() || isCompanyAdmin(adminId));
+        allow create, update, delete: if isSuperAdmin();
+      }
+
+      // Driver Alerts Subcollection
+      match /driver_alerts/{alertId} {
+        allow read: if isSignedIn() && (
+          isSuperAdmin() || 
+          isCompanyAdmin(adminId) || 
+          isCompanyDispatcher(adminId) ||
+          (isCompanyDriver(adminId) && (resource.data.get('driverId', '') == request.auth.uid || resource.data.get('createdByUid', '') == request.auth.uid))
+        );
+        allow create, update: if isSignedIn() && isEmailVerified() && (
+          isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId) || (
+            isCompanyDriver(adminId)
+          )
+        );
+        allow delete: if isSuperAdmin();
+
+        match /messages/{messageId} {
+          allow read: if isSignedIn() && (
+            isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId) || isCompanyDriver(adminId)
+          );
+          allow create: if isSignedIn() && isEmailVerified() && (
+            isSuperAdmin() || isCompanyAdmin(adminId) || isCompanyDispatcher(adminId) || isCompanyDriver(adminId)
+          );
+          allow update, delete: if isSuperAdmin() || isCompanyAdmin(adminId);
+        }
+      }
+    }
+
+    // 4. In-App and Super Admin Notifications
+    match /notifications/{notificationId} {
+      allow read: if isSignedIn() && (
+        isSuperAdmin() || 
+        (resource != null && (resource.data.get('forRole', '') == 'all' || resource.data.get('forRole', '') == '')) || 
+        (resource != null && (resource.data.get('forCompanyId', '') == '' || isCompanyMember(resource.data.get('forCompanyId', ''))))
+      );
+      allow create: if isSignedIn() && isEmailVerified() && isValidId(notificationId) && (
+        isSuperAdmin() || (
+          isValidNotification(incoming()) && (
+            incoming().get('forCompanyId', '') == '' ||
+            isCompanyMember(incoming().get('forCompanyId', '')) ||
+            isCompanyAdmin(incoming().get('forCompanyId', '')) ||
+            isCompanyDispatcher(incoming().get('forCompanyId', '')) ||
+            isCompanyDriver(incoming().get('forCompanyId', ''))
+          )
+        )
+      );
+      allow update: if isSignedIn() && isEmailVerified() && (
+        isSuperAdmin() || 
+        (resource != null && (resource.data.get('forCompanyId', '') == '' || isCompanyMember(resource.data.get('forCompanyId', ''))) && incoming().diff(resource.data).affectedKeys().hasOnly(['read']))
+      );
+      allow delete: if isSuperAdmin() || (resource != null && (resource.data.get('forCompanyId', '') == '' || isCompanyMember(resource.data.get('forCompanyId', ''))) && isCompanyAdmin(resource.data.get('forCompanyId', '')));
+    }
+
+    // 5. Outgoing Mail Queue (Trigger Email Extension)
+    match /mail/{mailId} {
+      allow create: if isSignedIn() && isEmailVerified() && isValidId(mailId) && (isSuperAdmin() || isValidMail(incoming()));
+      allow read: if isSignedIn() && (
+        isSuperAdmin() || 
+        ('to' in resource.data && resource.data.to is string && 'email' in request.auth.token && resource.data.to.lower() == request.auth.token.email.lower()) ||
+        ('to' in resource.data && resource.data.to is list && 'email' in request.auth.token && request.auth.token.email in resource.data.to)
+      );
+      allow delete: if isSuperAdmin();
+    }
+
+    // 6. SaaS Platform System Settings & API Configuration Control
+    match /system_settings/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isSuperAdmin() && isValidId(docId);
+    }
+
+    // 7. Dispatch Notification Audit Logs
+    match /dispatch_logs/{logId} {
+      allow read: if isSignedIn() && (
+        isSuperAdmin() || 
+        (resource != null && isCompanyMember(resource.data.get('companyId', '')))
+      );
+      allow create: if isSignedIn() && isEmailVerified() && isValidId(logId) && (
+        isSuperAdmin() || 
+        isValidDispatchLog(incoming())
+      );
+      allow update, delete: if isSuperAdmin();
+    }
+
+    // 8. SMS Gateway Dispatch Queue
+    match /sms_queue/{smsId} {
+      allow read: if isSignedIn() && (
+        isSuperAdmin() || 
+        (resource != null && isCompanyMember(resource.data.get('companyId', '')))
+      );
+      allow create: if isSignedIn() && isEmailVerified() && isValidId(smsId) && (
+        isSuperAdmin() || 
+        isValidSmsMessage(incoming())
+      );
+      allow update, delete: if isSuperAdmin();
+    }
+
+    // 9. Support Tickets
+    match /support_tickets/{ticketId} {
+      allow read: if isSignedIn() && (
+        isSuperAdmin() ||
+        (resource != null && isCompanyAdmin(resource.data.get('companyId', '')))
+      );
+      allow create: if isSignedIn() && isEmailVerified() && isValidId(ticketId) && (
+        isSuperAdmin() ||
+        (isCompanyAdmin(incoming().get('companyId', '')))
+      );
+      allow update: if isSignedIn() && isEmailVerified() && (
+        isSuperAdmin() ||
+        (
+          resource != null &&
+          isCompanyAdmin(resource.data.get('companyId', '')) &&
+          incoming().get('companyId', '') == resource.data.get('companyId', '') &&
+          resource.data.get('status', '') != 'closed'
+        )
+      );
+      allow delete: if isSuperAdmin();
+
+      match /messages/{messageId} {
+        allow read: if isSignedIn() && (
+          isSuperAdmin() ||
+          (
+            exists(/databases/$(database)/documents/support_tickets/$(ticketId)) &&
+            isCompanyAdmin(get(/databases/$(database)/documents/support_tickets/$(ticketId)).data.get('companyId', ''))
+          )
+        );
+        allow create: if isSignedIn() && isEmailVerified() && isValidId(messageId) && (
+          isSuperAdmin() ||
+          (
+            exists(/databases/$(database)/documents/support_tickets/$(ticketId)) &&
+            isCompanyAdmin(get(/databases/$(database)/documents/support_tickets/$(ticketId)).data.get('companyId', '')) &&
+            get(/databases/$(database)/documents/support_tickets/$(ticketId)).data.get('status', '') != 'closed'
+          )
+        );
+        allow update, delete: if isSuperAdmin();
+      }
+    }
+
+    // 10. Stripe Customers Index
+    match /stripe_customers/{stripeCustomerId} {
+      allow read: if isSignedIn() && (isSuperAdmin() || (resource != null && isCompanyAdmin(resource.data.get('companyId', ''))));
+      allow write: if isSuperAdmin();
+    }
+
+    // 11. System Announcements (Platform Master Banner)
+    match /system_announcements/{announcementId} {
+      allow read: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', '') != 'driver'
+        )
+      );
+      allow create, update, delete: if isSuperAdmin();
+    }
+
+    // 12. System Status (Platform Health Center)
+    match /system_status/{statusId} {
+      allow read: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', '') != 'driver'
+        )
+      );
+      allow create, update, delete: if isSuperAdmin();
+    }
+  }
+}
+
